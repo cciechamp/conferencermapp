@@ -4,7 +4,7 @@ import os
 
 db = SQLAlchemy()
 
-def create_app():
+def create_app(test_config=None):
     """Build and configure the Flask application (the app factory).
 
     Configures the SQLite database URI (``db/bookings.db``), initializes the
@@ -12,7 +12,10 @@ def create_app():
     defines the ``/health`` route, and creates any missing tables.
 
     Args:
-        None. Configuration is hard-coded/derived from the module location.
+        test_config (dict, optional): Config overrides applied on top of the
+            defaults, e.g. ``{"SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+            "TESTING": True}``. Used by the test suite to point at an isolated
+            database. Defaults to ``None`` (production defaults only).
 
     Returns:
         flask.Flask: A fully configured application instance, ready to be run
@@ -43,6 +46,9 @@ def create_app():
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(base_dir, 'db', 'bookings.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = 'workshop-secret-key'
+
+    if test_config:
+        app.config.update(test_config)
 
     db.init_app(app)
 
