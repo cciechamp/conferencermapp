@@ -1,4 +1,18 @@
-"""Tests for the /rooms routes and the availability endpoints."""
+"""Tests for the /rooms routes and the availability endpoints.
+
+The shared fixture seeds exactly one room (id 1) and one employee (id 1) and
+no bookings, so tests that need a booking create one through the API first.
+"""
+
+
+def _book(client, start, end, room_id=1, organizer_id=1):
+    """Create a booking via the API and return the response."""
+    return client.post('/bookings', json={
+        'room_id': room_id,
+        'organizer_id': organizer_id,
+        'start_time': start,
+        'end_time': end,
+    })
 
 
 def test_health(client):
@@ -12,8 +26,8 @@ def test_list_rooms(client):
     body = resp.get_json()
     assert resp.status_code == 200
     assert body['error'] is None
-    assert len(body['data']) == 2
-    assert {r['name'] for r in body['data']} == {'Test Room A', 'Test Room B'}
+    assert len(body['data']) == 1
+    assert body['data'][0]['name'] == 'Test Room'
 
 
 def test_get_room_found(client):
@@ -44,18 +58,17 @@ def test_available_unknown_room(client):
     assert resp.status_code == 404
 
 
-def test_available_excludes_booked_slot(client):
-    # Room A has a booking 10:00-10:30 on 2025-07-01, so that slot is gone.
+def test_available_full_day_when_no_bookings(client):
+    # Fresh fixture has no bookings, so the whole 09:00-18:00 grid is free.
     resp = client.get('/rooms/1/available?date=2025-07-01')
-    body = resp.get_json()
     assert resp.status_code == 200
+    assert len(resp.get_json()['data']) == 18
+
+
+def test_available_excludes_booked_slot(client):
+    # Book 10:00-10:30, then that slot must disappear from availability.
+    assert _book(client, '2025-07-01T10:00:00', '2025-07-01T10:30:00').status_code == 201
+    body = client.get('/rooms/1/available?date=2025-07-01').get_json()
     starts = {s['start_time'] for s in body['data']}
     assert '2025-07-01T10:00:00' not in starts
-    # Business hours 09:00-18:00 in 30-min slots = 18 total, minus the 1 booked.
-    assert len(body['data']) == 17
-
-
-def test_available_full_day_when_no_bookings(client):
-    # Room B (id 2) has no bookings, so the whole grid is free.
-    resp = client.get('/rooms/2/available?date=2025-07-01')
-    assert len(resp.get_json()['data']) == 18
+    assert len(body['data']) == 17  # 18 slots minus the 1 booked

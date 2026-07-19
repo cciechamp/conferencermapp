@@ -1,16 +1,32 @@
-"""Tests for the /bookings CRUD routes, including conflict handling."""
+"""Tests for the /bookings CRUD routes, including conflict handling.
+
+The shared fixture seeds one room (id 1) and one employee (id 1) and no
+bookings, so tests that need an existing booking create one via the API first.
+"""
 
 
-def test_list_bookings(client):
+def _book(client, start, end, room_id=1, organizer_id=1, **extra):
+    """Create a booking via the API and return the response."""
+    payload = {
+        'room_id': room_id,
+        'organizer_id': organizer_id,
+        'start_time': start,
+        'end_time': end,
+    }
+    payload.update(extra)
+    return client.post('/bookings', json=payload)
+
+
+def test_list_bookings_starts_empty(client):
     resp = client.get('/bookings')
-    body = resp.get_json()
     assert resp.status_code == 200
-    assert len(body['data']) == 1
+    assert resp.get_json()['data'] == []
 
 
 def test_list_bookings_filtered_by_room(client):
+    _book(client, '2025-07-01T09:00:00', '2025-07-01T09:30:00')
     assert len(client.get('/bookings?room_id=1').get_json()['data']) == 1
-    assert len(client.get('/bookings?room_id=2').get_json()['data']) == 0
+    assert len(client.get('/bookings?room_id=999').get_json()['data']) == 0
 
 
 def test_get_booking_not_found(client):
@@ -20,15 +36,8 @@ def test_get_booking_not_found(client):
 
 
 def test_create_booking_success(client):
-    payload = {
-        'room_id': 1,
-        'organizer_id': 1,
-        'start_time': '2025-07-01T11:00:00',
-        'end_time': '2025-07-01T11:30:00',
-        'meeting_title': 'New sync',
-        'attendees': 2,
-    }
-    resp = client.post('/bookings', json=payload)
+    resp = _book(client, '2025-07-01T11:00:00', '2025-07-01T11:30:00',
+                 meeting_title='New sync', attendees=2)
     body = resp.get_json()
     assert resp.status_code == 201
     assert body['data']['status'] == 'scheduled'
@@ -42,48 +51,33 @@ def test_create_booking_missing_field(client):
 
 
 def test_create_booking_end_before_start(client):
-    payload = {
-        'room_id': 1,
-        'organizer_id': 1,
-        'start_time': '2025-07-01T12:00:00',
-        'end_time': '2025-07-01T11:00:00',
-    }
-    resp = client.post('/bookings', json=payload)
+    resp = _book(client, '2025-07-01T12:00:00', '2025-07-01T11:00:00')
     assert resp.status_code == 400
     assert 'after' in resp.get_json()['error']
 
 
 def test_create_booking_conflict(client):
-    # Overlaps the seeded 10:00-10:30 booking in room 1.
-    payload = {
-        'room_id': 1,
-        'organizer_id': 2,
-        'start_time': '2025-07-01T10:15:00',
-        'end_time': '2025-07-01T10:45:00',
-    }
-    resp = client.post('/bookings', json=payload)
+    _book(client, '2025-07-01T10:00:00', '2025-07-01T10:30:00')
+    # Overlaps the booking just created.
+    resp = _book(client, '2025-07-01T10:15:00', '2025-07-01T10:45:00')
     assert resp.status_code == 409
     assert 'conflict' in resp.get_json()['error'].lower()
 
 
 def test_create_booking_back_to_back_allowed(client):
-    # Starts exactly when the seeded booking ends -> must be allowed (strict <>).
-    payload = {
-        'room_id': 1,
-        'organizer_id': 2,
-        'start_time': '2025-07-01T10:30:00',
-        'end_time': '2025-07-01T11:00:00',
-    }
-    resp = client.post('/bookings', json=payload)
+    _book(client, '2025-07-01T10:00:00', '2025-07-01T10:30:00')
+    # Starts exactly when the first ends -> allowed (strict < / > comparisons).
+    resp = _book(client, '2025-07-01T10:30:00', '2025-07-01T11:00:00')
     assert resp.status_code == 201
 
 
 def test_reschedule_booking(client):
-    payload = {
+    booking_id = _book(client, '2025-07-01T10:00:00',
+                       '2025-07-01T10:30:00').get_json()['data']['id']
+    resp = client.put(f'/bookings/{booking_id}', json={
         'start_time': '2025-07-01T15:00:00',
         'end_time': '2025-07-01T15:30:00',
-    }
-    resp = client.put('/bookings/1', json=payload)
+    })
     body = resp.get_json()
     assert resp.status_code == 200
     assert body['data']['start_time'] == '2025-07-01T15:00:00'
@@ -98,10 +92,12 @@ def test_reschedule_not_found(client):
 
 
 def test_cancel_booking_soft_deletes(client):
-    resp = client.delete('/bookings/1')
+    booking_id = _book(client, '2025-07-01T10:00:00',
+                       '2025-07-01T10:30:00').get_json()['data']['id']
+    resp = client.delete(f'/bookings/{booking_id}')
     assert resp.status_code == 200
     assert resp.get_json()['data']['status'] == 'cancelled'
-    # Row still exists, just cancelled -> its slot is now free again.
+    # Row still exists, just cancelled -> its slot is free again.
     avail = client.get('/rooms/1/available?date=2025-07-01').get_json()['data']
     assert '2025-07-01T10:00:00' in {s['start_time'] for s in avail}
 
